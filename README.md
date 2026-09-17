@@ -2,11 +2,15 @@
 **Assignment 2: Internal Service Agent (IT Support)**  
 *Company: Veridian Corp | Operational Week: 21 – 25 September 2026*
 
+[![Live Demo](https://img.shields.io/badge/Live_Demo-HTTPS_Active-success?style=for-the-badge&logo=vercel)](https://836dca98ba049b.lhr.life)
 [![Node.js Version](https://img.shields.io/badge/Node.js-v18%2B-green.svg)](https://nodejs.org/)
 [![React Version](https://img.shields.io/badge/React-18-blue.svg)](https://react.dev/)
 [![Database](https://img.shields.io/badge/Database-SQLite%20(sql.js)-orange.svg)](https://sql.js.org/)
 [![Security](https://img.shields.io/badge/Cybersecurity-Helmet%20%7C%20RateLimit%20%7C%20XSS-shield.svg)]()
 [![Presentation](https://img.shields.io/badge/PDF_Deck-10_Slides_Included-purple.svg)](./Veridian_IT_Service_Agent_10_Slide_Presentation.pdf)
+
+> 🌐 **Live Deployed Application URL:** [https://836dca98ba049b.lhr.life](https://836dca98ba049b.lhr.life)  
+> *(Fully functional live instance: React frontend + Express API + SQLite database)*
 
 ---
 
