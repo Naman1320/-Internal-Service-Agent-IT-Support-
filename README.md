@@ -1,4 +1,4 @@
-# 🚀 Veridian IT Service Agent — Autonomous Triage & Support Platform
+#  Veridian IT Service Agent — Autonomous Triage & Support Platform
 **Assignment 2: Internal Service Agent (IT Support)**  
 *Company: Veridian Corp | Operational Week: 21 – 25 September 2026*
 
@@ -10,7 +10,7 @@
 
 ---
 
-## 📌 Executive Summary
+##  Executive Summary
 
 **Veridian IT Service Agent** is an enterprise-grade, full-stack IT Helpdesk Triage & Resolution system built for Veridian Corp. The system automates ticket classification, self-service policy fulfillment, policy conflict detection, security escalation, and human helpdesk routing.
 
@@ -18,7 +18,7 @@ It operates strictly against the **Assignment 2 Data Pack** (26 Employee Profile
 
 ---
 
-## 🏗️ Solution Architecture & Technology Stack
+##  Solution Architecture & Technology Stack
 
 ```
 veridian-it-service-agent/
@@ -42,30 +42,30 @@ veridian-it-service-agent/
 
 ---
 
-## 🔑 Key Features
+##  Key Features
 
-### 1. 🤖 Conversational AI Agent & Natural Triage (`/chat`)
+### 1.  Conversational AI Agent & Natural Triage (`/chat`)
 - Addresses employees directly by name and department (e.g., *"Hello Aditi,"*).
 - Formats responses in rich Markdown with exact **`KB-XX` policy source citations**.
 - Executes self-service actions automatically (password unlock triggers, guest Wi-Fi passes, full-time VPN renewal guidance).
 
-### 2. ⚖️ Policy Conflict Resolution Engine
+### 2. Policy Conflict Resolution Engine
 - **KB-03 vs. Asset Management Policy:** Detects conflicts when a laptop replacement is requested between 3 and 4 years of service (KB-03 3-yr threshold vs. Asset Policy 4-yr refresh cycle).
 - Flags policy conflict notes explicitly and references historical precedent **`TK-1043`** (3.2 yrs approved) for auditable human decision-making.
 
-### 3. 🎯 3-Tier Outcome Decision Matrix
+### 3. 3-Tier Outcome Decision Matrix
 Every request is evaluated into one of three strict outcomes:
 - **`auto_resolve`**: Fully covered by unambiguous KB policy without requiring human intervention.
 - **`route_to_human`**: Requires manager sign-off, Security review, or Finance approval (e.g., non-catalog software, phishing incidents, WFH allowances, admin access).
 - **`needs_clarification`**: Vague request lacking technical details (e.g. `REQ-15` *"hey can you help, its not working"*).
 
-### 4. 📊 Admin Analytics Dashboard & Ticket Controls (`/admin/dashboard`)
+### 4. Admin Analytics Dashboard & Ticket Controls (`/admin/dashboard`)
 - Real-time KPI stats (Active Tickets, Resolution Rate, SLA breaches, Category Breakdown).
 - Filterable Ticket Queue (`/admin/tickets`) with override controls.
 - Full Knowledge Base CRUD Editor (`/admin/kb`) with live **`⚡ Re-Train AI Model`** action.
 - User Management (`/admin/users`) with role promotion, account status toggles, and user deletion.
 
-### 5. 🛡️ Enterprise Cybersecurity Suite
+### 5. Enterprise Cybersecurity Suite
 - **XSS & Injection Protection:** Automated middleware sanitizing `<script>`, `javascript:`, and HTML tokens from incoming request payloads.
 - **Strict HTTP Security Headers:** Helmet Content-Security-Policy (CSP), `X-Frame-Options: DENY`, and `Referrer-Policy: strict-origin-when-cross-origin`.
 - **Brute-Force Lockout:** IP-based rate limiter capping auth endpoints at 15 attempts / 15 minutes.
@@ -73,7 +73,7 @@ Every request is evaluated into one of three strict outcomes:
 
 ---
 
-## ⚡ Quick Start Guide (Run Locally)
+## Quick Start Guide (Run Locally)
 
 ### Prerequisites
 - Node.js (v18 or higher)
@@ -87,12 +87,12 @@ npm start
 ```
 
 This single command launches both servers concurrently:
-- 🌐 **Frontend Web App:** [http://localhost:5174/](http://localhost:5174/) (or `http://localhost:5173/`)
-- ⚙️ **Backend REST API:** [http://localhost:5001/api](http://localhost:5001/api)
+-  **Frontend Web App:** [http://localhost:5174/](http://localhost:5174/) (or `http://localhost:5173/`)
+-  **Backend REST API:** [http://localhost:5001/api](http://localhost:5001/api)
 
 ---
 
-## 🔑 Pre-Seeded Test Login Credentials
+##  Pre-Seeded Test Login Credentials
 
 | Persona | Role | Email | Password | Access Rights |
 | :--- | :--- | :--- | :--- | :--- |
@@ -103,7 +103,7 @@ This single command launches both servers concurrently:
 
 ---
 
-## 📋 Data Pack Request Verification Matrix (REQ-01 to REQ-15)
+##  Data Pack Request Verification Matrix (REQ-01 to REQ-15)
 
 All 15 employee requests from the Assignment Data Pack are pre-seeded and tested:
 
@@ -127,15 +127,15 @@ All 15 employee requests from the Assignment Data Pack are pre-seeded and tested
 
 ---
 
-## 📄 Presentation & PDF Artifacts
+##  Presentation & PDF Artifacts
 
 A 10-slide presentation covering system architecture, process flows, AI tool allocation, conflict matrix, and QA results is included:
 
-- 📊 **PDF Presentation File:** [`./Veridian_IT_Service_Agent_10_Slide_Presentation.pdf`](./Veridian_IT_Service_Agent_10_Slide_Presentation.pdf)
+-  **PDF Presentation File:** [`./Veridian_IT_Service_Agent_10_Slide_Presentation.pdf`](./Veridian_IT_Service_Agent_10_Slide_Presentation.pdf)
 
 ---
 
-## 🛠️ Operational API Endpoints
+##  Operational API Endpoints
 
 - `POST /api/agent/chat` — Conversational AI Chat intake.
 - `POST /api/agent/evaluate` — Evaluates request and returns strict assignment JSON decision schema.
@@ -145,5 +145,5 @@ A 10-slide presentation covering system architecture, process flows, AI tool all
 
 ---
 
-## 📜 License & Compliance
+##  License & Compliance
 Designed and developed for Veridian Corp IT Support Triage Evaluation (Assignment 2). Built with 100% strict policy grounding and zero hallucination.
