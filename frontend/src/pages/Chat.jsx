@@ -35,6 +35,7 @@ export default function Chat() {
   const [currentTicketId, setCurrentTicketId] = useState(null);
   const [currentTicketCode, setCurrentTicketCode] = useState(null);
   const [kbSources, setKbSources] = useState([]);
+  const [activeFollowUps, setActiveFollowUps] = useState([]);
   const messagesEndRef = useRef(null);
   const inputRef = useRef(null);
 
@@ -53,27 +54,28 @@ export default function Chat() {
       type: 'agent',
       content: `Hello${user?.name ? ', ' + user.name.split(' ')[0] : ''}! 👋\n\nI'm the **Veridian IT Service Agent**. I can help you with:\n\n• 🔑 Password resets & account access\n• 🌐 VPN & network issues\n• 💻 Laptop & hardware problems\n• 🖨️ Printer troubleshooting\n• 📧 Email & mailbox issues\n• 📦 Software installation requests\n• 🏠 Work-from-home equipment\n• 🔒 Security incident reporting\n\n**How can I help you today?** Just describe your issue in plain language.`,
       timestamp: new Date().toISOString(),
-      kbSources: []
+      kbSources: [],
+      followUpQuestions: []
     }]);
   }, [user]);
 
-  const handleSend = async () => {
-    if (!input.trim() || sending) return;
+  const sendMessage = async (messageText) => {
+    if (!messageText.trim() || sending) return;
 
     const userMessage = {
       id: Date.now(),
       type: 'employee',
-      content: input.trim(),
+      content: messageText.trim(),
       timestamp: new Date().toISOString()
     };
 
     setMessages(prev => [...prev, userMessage]);
-    const messageText = input.trim();
     setInput('');
+    setActiveFollowUps([]);
     setSending(true);
 
     try {
-      const data = await api.sendMessage(messageText, currentTicketId);
+      const data = await api.sendMessage(messageText.trim(), currentTicketId);
 
       // Set ticket context for follow-ups
       if (data.ticketId && !currentTicketId) {
@@ -85,6 +87,8 @@ export default function Chat() {
         setKbSources(data.kbSources);
       }
 
+      const followUps = data.followUpQuestions || [];
+
       const agentMessage = {
         id: Date.now() + 1,
         type: 'agent',
@@ -93,21 +97,33 @@ export default function Chat() {
         kbSources: data.kbSources || [],
         ticketId: data.ticket_id,
         status: data.status,
-        action: data.action
+        action: data.action,
+        followUpQuestions: followUps
       };
 
       setMessages(prev => [...prev, agentMessage]);
+      setActiveFollowUps(followUps);
     } catch (err) {
       setMessages(prev => [...prev, {
         id: Date.now() + 1,
         type: 'agent',
         content: `I apologize, but I encountered an error processing your request. Please try again or contact IT directly.\n\n**Error:** ${err.message}`,
         timestamp: new Date().toISOString(),
-        kbSources: []
+        kbSources: [],
+        followUpQuestions: []
       }]);
+      setActiveFollowUps([]);
     } finally {
       setSending(false);
     }
+  };
+
+  const handleSend = () => {
+    sendMessage(input);
+  };
+
+  const handleFollowUpClick = (question) => {
+    sendMessage(question);
   };
 
   const handleKeyDown = (e) => {
@@ -121,12 +137,14 @@ export default function Chat() {
     setCurrentTicketId(null);
     setCurrentTicketCode(null);
     setKbSources([]);
+    setActiveFollowUps([]);
     setMessages([{
       id: 'welcome-new',
       type: 'agent',
       content: `Ready to help with a new issue! 🚀\n\nPlease describe your IT problem and I'll do my best to assist you.`,
       timestamp: new Date().toISOString(),
-      kbSources: []
+      kbSources: [],
+      followUpQuestions: []
     }]);
   };
 
@@ -161,7 +179,7 @@ export default function Chat() {
         </div>
 
         <div className="chat-messages">
-          {messages.map((msg) => (
+          {messages.map((msg, index) => (
             <div key={msg.id} className={`chat-message ${msg.type}`}>
               <div className="chat-avatar">
                 {msg.type === 'agent' ? '🤖' : user?.name?.[0] || '👤'}
@@ -182,6 +200,25 @@ export default function Chat() {
                     <span className={`badge badge-status badge-${msg.status}`}>
                       {msg.status.replace(/_/g, ' ')}
                     </span>
+                  </div>
+                )}
+
+                {/* Follow-up suggestion chips — only on the LAST agent message */}
+                {msg.type === 'agent' && index === messages.length - 1 && activeFollowUps.length > 0 && !sending && (
+                  <div className="followup-chips">
+                    <div className="followup-label">💡 Suggested responses:</div>
+                    <div className="followup-chips-list">
+                      {activeFollowUps.map((q, i) => (
+                        <button
+                          key={i}
+                          className="followup-chip"
+                          onClick={() => handleFollowUpClick(q)}
+                          title={`Click to answer: ${q}`}
+                        >
+                          {q}
+                        </button>
+                      ))}
+                    </div>
                   </div>
                 )}
 
@@ -237,3 +274,4 @@ export default function Chat() {
     </div>
   );
 }
+

@@ -678,20 +678,560 @@ class AgentEngine {
   }
 
   /**
-   * Process Follow-Up messages dynamically without repeating
+   * Process Follow-Up messages with context-aware state machine
+   * Detects the last question asked, parses the user's answer intelligently,
+   * and generates targeted follow-up responses without repeating itself.
    */
   processFollowUp(message, ticketId, userId) {
     const ticket = this.db.prepare('SELECT * FROM tickets WHERE id = ?').get(ticketId);
     if (!ticket) return null;
 
     const messages = this.db.prepare('SELECT * FROM messages WHERE ticket_id = ? ORDER BY created_at').all(ticketId);
+    const text = message.trim();
+    const textLower = text.toLowerCase();
 
-    // Combine recent messages for context-aware processing
-    const contextText = messages.slice(-3).map(m => m.content).join(' ') + ' ' + message;
+    // Fetch user for personalization
+    let user = null;
+    if (userId) {
+      user = this.db.prepare('SELECT id, name, email, department, employment_type FROM users WHERE id = ?').get(userId);
+    }
+    const name = user ? user.name.split(' ')[0] : 'there';
+
+    // --- 1. Detect what the agent last asked ---
+    const agentMessages = messages.filter(m => m.sender_type === 'agent');
+    const lastAgentMsg = agentMessages.length > 0 ? agentMessages[agentMessages.length - 1].content : '';
+    const lastAction = agentMessages.length > 0 ? agentMessages[agentMessages.length - 1].action_taken : '';
+    const previousEmployeeMessages = messages.filter(m => m.sender_type === 'employee');
+
+    // Detect the follow-up context from the last agent message
+    const followUpContext = this._detectFollowUpContext(lastAgentMsg, lastAction, ticket);
+
+    // --- 2. Parse the user's answer based on context ---
+    const parsedAnswer = this._parseFollowUpAnswer(text, followUpContext, ticket);
+
+    // --- 3. Generate context-aware follow-up response ---
+    const followUpResponse = this._generateFollowUpResponse(parsedAnswer, followUpContext, ticket, name, text, user);
+
+    // If the follow-up handler generated a specific response, use it
+    if (followUpResponse) {
+      const kbArticles = followUpResponse.kbArticles || [];
+      return {
+        response: followUpResponse,
+        classification: {
+          category: followUpResponse.updatedCategory || ticket.category,
+          subCategory: followUpResponse.updatedSubCategory || null,
+          confidence: followUpResponse.confidence || 0.85,
+          priority: followUpResponse.priority,
+          kb_id: kbArticles.length > 0 ? kbArticles[0].kb_id : null
+        },
+        kbArticles: kbArticles,
+        ticketData: {
+          category: followUpResponse.updatedCategory || ticket.category,
+          priority: followUpResponse.priority,
+          status: followUpResponse.status,
+          subject: ticket.subject,
+          description: text,
+          kb_articles_referenced: JSON.stringify(kbArticles.map(a => a.kb_id)),
+          agent_reasoning: followUpResponse.reasoning || `Follow-up processed: ${followUpResponse.action}`,
+          assigned_to: followUpResponse.escalate ? 'Security Team' : ticket.assigned_to || 'AI Agent',
+          action_taken: followUpResponse.action,
+          existingTicketId: ticketId
+        },
+        context: { userName: name }
+      };
+    }
+
+    // --- 4. Fallback: Re-classify with full conversation context ---
+    const contextText = previousEmployeeMessages.slice(-2).map(m => m.content).join(' ') + ' ' + text;
     const result = this.processMessage(contextText, userId, ticketId);
 
-    // If the original ticket was unknown/vague and now has details, update category
+    // Prevent repeating the exact same response
+    if (result.response.message === lastAgentMsg) {
+      result.response.message = `Thank you for that additional information, ${name}. I've updated your ticket with these details.\n\nIs there anything else I can help you with regarding this issue?`;
+      result.response.action = 'additional_info_recorded';
+    }
+
     return result;
+  }
+
+  /**
+   * Detect what type of follow-up question was asked by analyzing the last agent message
+   */
+  _detectFollowUpContext(lastAgentMsg, lastAction, ticket) {
+    const msgLower = lastAgentMsg.toLowerCase();
+    const context = {
+      type: 'general',
+      expectedAnswer: null,
+      originalCategory: ticket.category,
+      originalAction: lastAction
+    };
+
+    // Laptop age question
+    if (/how old.*laptop/i.test(msgLower) || /laptop.*age/i.test(msgLower) || /device age/i.test(msgLower) || /3-year.*threshold/i.test(msgLower) || (/asset tag/i.test(msgLower) && /laptop/i.test(msgLower))) {
+      context.type = 'laptop_age';
+      context.expectedAnswer = 'number_or_age';
+    }
+    // Laptop asset tag
+    else if (/asset tag/i.test(msgLower) && (ticket.category === 'Hardware' || /laptop|computer/i.test(msgLower))) {
+      context.type = 'asset_tag';
+      context.expectedAnswer = 'tag_identifier';
+    }
+    // WFH days question
+    else if (/how many days/i.test(msgLower) || /days.*week.*remote/i.test(msgLower) || /days.*work.*home/i.test(msgLower)) {
+      context.type = 'wfh_days';
+      context.expectedAnswer = 'number';
+    }
+    // Printer location / asset
+    else if (/printer.*asset/i.test(msgLower) || /floor.*printer/i.test(msgLower) || /which floor/i.test(msgLower) || /printer.*location/i.test(msgLower)) {
+      context.type = 'printer_info';
+      context.expectedAnswer = 'location_or_tag';
+    }
+    // Manager approval question
+    else if (/approval.*manager/i.test(msgLower) || /manager.*approval/i.test(msgLower) || /department head/i.test(msgLower) || /do you have.*approval/i.test(msgLower) || /approved.*access.*form/i.test(msgLower)) {
+      context.type = 'approval_check';
+      context.expectedAnswer = 'yes_no';
+    }
+    // Expense account question
+    else if (/expense.*account/i.test(msgLower) || /already have.*account/i.test(msgLower)) {
+      context.type = 'expense_account';
+      context.expectedAnswer = 'yes_no';
+    }
+    // Quota increase question
+    else if (/quota.*increase/i.test(msgLower) || /would you like.*request/i.test(msgLower)) {
+      context.type = 'quota_request';
+      context.expectedAnswer = 'yes_no';
+    }
+    // Contractor end date
+    else if (/end date/i.test(msgLower) || /project.*end/i.test(msgLower) || /contractor.*date/i.test(msgLower)) {
+      context.type = 'contractor_date';
+      context.expectedAnswer = 'date';
+    }
+    // Charger / display question (laptop sub-follow-up)
+    else if (/charger|external display|plugged in/i.test(msgLower)) {
+      context.type = 'laptop_diagnostic';
+      context.expectedAnswer = 'yes_no_detail';
+    }
+    // Vague → specificity (general clarification)
+    else if (/which system|what device|what.*error|what.*symptom|when did/i.test(msgLower) || lastAction === 'follow_up_required') {
+      context.type = 'clarification';
+      context.expectedAnswer = 'descriptive';
+    }
+    // Platform change confirmation
+    else if (/submit.*platform.*change/i.test(msgLower) || /submit.*request.*manager/i.test(msgLower)) {
+      context.type = 'confirm_action';
+      context.expectedAnswer = 'yes_no';
+    }
+
+    return context;
+  }
+
+  /**
+   * Parse the user's follow-up answer based on what was expected
+   */
+  _parseFollowUpAnswer(text, followUpContext, ticket) {
+    const textLower = text.toLowerCase();
+    const parsed = {
+      isYes: /^(yes|yeah|yep|sure|ok|okay|correct|affirmative|please|go ahead|do it|submit|proceed)/i.test(textLower.trim()),
+      isNo: /^(no|nope|nah|not yet|don't|haven't|i don't|negative|cancel)/i.test(textLower.trim()),
+      number: null,
+      age: null,
+      assetTag: null,
+      floor: null,
+      date: null,
+      newIssueDetected: false,
+      rawText: text
+    };
+
+    // Extract numbers
+    const numMatch = text.match(/(\d+\.?\d*)\s*(?:year|yr|yrs)?/i);
+    if (numMatch) {
+      parsed.number = parseFloat(numMatch[1]);
+      if (/year|yr|yrs|old/i.test(text)) {
+        parsed.age = parsed.number;
+      }
+    }
+
+    // Just a bare number like "4" or "3"
+    if (!parsed.number) {
+      const bareNum = text.match(/^\s*(\d+\.?\d*)\s*$/);
+      if (bareNum) {
+        parsed.number = parseFloat(bareNum[1]);
+        // Context-dependent: if asking about age, treat as years
+        if (followUpContext.type === 'laptop_age') parsed.age = parsed.number;
+        if (followUpContext.type === 'wfh_days') parsed.number = parseInt(bareNum[1]);
+      }
+    }
+
+    // Extract asset tag
+    const tagMatch = text.match(/[A-Z]{2,4}-\d{3,6}/i);
+    if (tagMatch) parsed.assetTag = tagMatch[0].toUpperCase();
+
+    // Extract floor
+    const floorMatch = text.match(/(?:floor|level)\s*(\d+)/i) || text.match(/(\d+)(?:st|nd|rd|th)\s*floor/i);
+    if (floorMatch) parsed.floor = parseInt(floorMatch[1]);
+
+    // Extract date
+    const dateMatch = text.match(/(\d{1,2}[\/\-]\d{1,2}[\/\-]\d{2,4})/);
+    if (dateMatch) parsed.date = dateMatch[1];
+    const monthMatch = text.match(/(january|february|march|april|may|june|july|august|september|october|november|december)\s*\d{0,4}/i);
+    if (monthMatch) parsed.date = monthMatch[0];
+
+    // Check if user is raising a completely new issue instead of answering
+    const newIssuePatterns = [/my\s+(email|laptop|printer|vpn|wifi|password|software)/i, /i\s+(?:need|want|can't|cannot)\s/i, /install|phishing|suspicious/i];
+    if (followUpContext.type !== 'clarification' && newIssuePatterns.some(p => p.test(textLower))) {
+      parsed.newIssueDetected = true;
+    }
+
+    return parsed;
+  }
+
+  /**
+   * Generate targeted follow-up response based on parsed answer and context
+   */
+  _generateFollowUpResponse(parsed, followUpContext, ticket, name, originalText, user) {
+    const type = followUpContext.type;
+
+    // If user is raising a new issue entirely, let the main processor handle it
+    if (parsed.newIssueDetected && type !== 'clarification') {
+      return null; // Fall through to main processMessage
+    }
+
+    // ========== LAPTOP AGE FOLLOW-UP ==========
+    if (type === 'laptop_age') {
+      const age = parsed.age || parsed.number;
+      const kbArticle = this.db.prepare('SELECT * FROM knowledge_base WHERE kb_id = ?').get('KB-03');
+      const kbArticles = kbArticle ? [kbArticle] : [];
+
+      if (age !== null && age >= 3) {
+        return {
+          message: `Thank you ${name}! ✅\n\n**Assessment Result (per ${kbArticle ? `${kbArticle.kb_id} — ${kbArticle.title}` : 'KB-03 Laptop Policy'}):**\n• Your device age (**${age} years**) meets the **3-year refresh threshold** for hardware replacement!\n• No additional Finance sign-off is required.\n\n**Next Steps:**\n1. Replacement order has been submitted to Asset Management.\n2. Lead time is **2 business weeks**.\n3. You will receive an email to schedule data transfer and pickup.\n${parsed.assetTag ? `\n📌 **Asset Tag recorded:** ${parsed.assetTag}` : ''}\n\n📋 **Reference:** ${kbArticle ? `${kbArticle.kb_id} — ${kbArticle.title}` : 'KB-03 Laptop Refresh'}`,
+          action: 'replacement_approved_via_followup',
+          status: 'in_progress',
+          priority: 'high',
+          escalate: false,
+          autoResolved: false,
+          followUpQuestions: [],
+          kbArticles: kbArticles,
+          updatedCategory: 'Hardware',
+          updatedSubCategory: 'Laptop',
+          reasoning: `Follow-up: Employee confirmed laptop age is ${age} years (≥3yr threshold). Replacement approved per KB-03.`
+        };
+      }
+
+      if (age !== null && age < 3) {
+        return {
+          message: `Thank you for confirming, ${name}.\n\n**Assessment (per ${kbArticle ? `${kbArticle.kb_id} — ${kbArticle.title}` : 'KB-03 Laptop Policy'}):**\n• Your device age (**${age} years**) is under the 3-year replacement threshold.\n• This ticket has been routed to **Hardware Repair** instead.\n\n**Next Steps:**\n1. A technician will inspect the hardware defect.\n2. If unrepairable, an early replacement can be escalated with **Finance Sign-off**.\n\nDoes the issue occur when the laptop is plugged into a charger or connected to an external display?`,
+          action: 'repair_routed_via_followup',
+          status: 'in_progress',
+          priority: 'medium',
+          escalate: false,
+          autoResolved: false,
+          followUpQuestions: ['Does the issue happen when plugged into a charger?', 'Is the laptop connected to an external display?'],
+          kbArticles: kbArticles,
+          updatedCategory: 'Hardware',
+          updatedSubCategory: 'Laptop',
+          reasoning: `Follow-up: Employee confirmed laptop age is ${age} years (<3yr threshold). Routed to repair per KB-03.`
+        };
+      }
+
+      // Couldn't parse age — re-ask
+      return {
+        message: `I wasn't able to determine the laptop age from your response, ${name}. Could you please specify the age in years?\n\nFor example: *"It's about 4 years old"* or just the number like *"3"*.\n\nYou can also provide your **Asset Tag** (sticker on the bottom of the laptop) so I can look it up directly.`,
+        action: 'follow_up_reprompt',
+        status: 'waiting_response',
+        priority: ticket.priority || 'medium',
+        escalate: false,
+        autoResolved: false,
+        followUpQuestions: ['How many years old is your laptop?', 'What is the asset tag number?'],
+        kbArticles: [],
+        reasoning: 'Follow-up: Could not parse laptop age from employee response. Re-prompting.'
+      };
+    }
+
+    // ========== WFH DAYS FOLLOW-UP ==========
+    if (type === 'wfh_days') {
+      const days = parsed.number;
+      const kbArticle = this.db.prepare('SELECT * FROM knowledge_base WHERE kb_id = ?').get('KB-10');
+      const kbArticles = kbArticle ? [kbArticle] : [];
+
+      if (days !== null && days >= 3) {
+        return {
+          message: `Great news, ${name}! ✅\n\n**WFH Eligibility Confirmed (per ${kbArticle ? `${kbArticle.kb_id} — ${kbArticle.title}` : 'KB-10 WFH Policy'}):**\n• Working **${days} days/week** remotely qualifies you for the one-time Home Office Equipment Package.\n\n**What's Included:**\n• Ergonomic office chair\n• 27\" external monitor\n• Docking station\n\n**Process:**\n1. ✅ Manager approval request will be sent automatically.\n2. Finance processes the allowance voucher.\n3. IT dispatches equipment to your primary home address.\n\n📋 **Reference:** ${kbArticle ? `${kbArticle.kb_id} — ${kbArticle.title}` : 'KB-10 WFH Equipment'}`,
+          action: 'wfh_approved_via_followup',
+          status: 'waiting_approval',
+          priority: 'medium',
+          escalate: false,
+          autoResolved: false,
+          followUpQuestions: [],
+          kbArticles: kbArticles,
+          updatedCategory: 'Hardware',
+          updatedSubCategory: 'WFH Equipment',
+          reasoning: `Follow-up: Employee confirmed ${days} WFH days/week (≥3 threshold). Equipment request submitted per KB-10.`
+        };
+      }
+
+      if (days !== null && days < 3) {
+        return {
+          message: `Thank you for confirming, ${name}.\n\n**WFH Policy Check (per ${kbArticle ? `${kbArticle.kb_id} — ${kbArticle.title}` : 'KB-10 WFH Policy'}):**\n• Working **${days} days/week** remotely does **not** meet the minimum **3 days/week** threshold for the Home Office Equipment Package.\n\n**Alternatives:**\n• You may use available shared equipment in the office.\n• If your remote work schedule changes to 3+ days, please re-submit.\n• Your manager can request a policy exception if needed.\n\n📋 **Reference:** ${kbArticle ? `${kbArticle.kb_id} — ${kbArticle.title}` : 'KB-10 WFH Equipment'}`,
+          action: 'wfh_ineligible_via_followup',
+          status: 'resolved',
+          priority: 'low',
+          escalate: false,
+          autoResolved: true,
+          followUpQuestions: [],
+          kbArticles: kbArticles,
+          updatedCategory: 'Hardware',
+          updatedSubCategory: 'WFH Equipment',
+          reasoning: `Follow-up: Employee confirmed ${days} WFH days/week (<3 threshold). Not eligible per KB-10.`
+        };
+      }
+
+      return {
+        message: `I wasn't able to determine the number of remote work days, ${name}. Could you specify how many days per week you work from home?\n\nFor example: *"3 days"* or just *"4"*.`,
+        action: 'follow_up_reprompt',
+        status: 'waiting_response',
+        priority: 'medium',
+        escalate: false,
+        autoResolved: false,
+        followUpQuestions: ['How many days per week do you work from home?'],
+        kbArticles: [],
+        reasoning: 'Follow-up: Could not parse WFH days. Re-prompting.'
+      };
+    }
+
+    // ========== PRINTER INFO FOLLOW-UP ==========
+    if (type === 'printer_info') {
+      const kbArticle = this.db.prepare('SELECT * FROM knowledge_base WHERE kb_id = ?').get('KB-05');
+      const kbArticles = kbArticle ? [kbArticle] : [];
+      const details = [];
+
+      if (parsed.assetTag) details.push(`**Asset Tag:** ${parsed.assetTag}`);
+      if (parsed.floor) details.push(`**Floor:** ${parsed.floor}`);
+
+      if (details.length > 0 || originalText.length > 5) {
+        return {
+          message: `Thank you for those details, ${name}! 🖨️\n\n${details.length > 0 ? `**Recorded Information:**\n${details.map(d => `• ${d}`).join('\n')}\n\n` : ''}**Action Taken:**\nA technician dispatch request has been created for the printer ${parsed.assetTag ? `(${parsed.assetTag})` : ''} ${parsed.floor ? `on Floor ${parsed.floor}` : 'at your location'}.\n\n**Expected Timeline:**\n• Technician visit within **4 business hours**.\n• You will receive a confirmation email shortly.\n\n📋 **Reference:** ${kbArticle ? `${kbArticle.kb_id} — ${kbArticle.title}` : 'KB-05 Printer Support'}`,
+          action: 'technician_dispatched_via_followup',
+          status: 'in_progress',
+          priority: 'medium',
+          escalate: false,
+          autoResolved: false,
+          followUpQuestions: [],
+          kbArticles: kbArticles,
+          updatedCategory: 'Hardware',
+          updatedSubCategory: 'Printer',
+          reasoning: `Follow-up: Employee provided printer details${parsed.assetTag ? ` (${parsed.assetTag})` : ''}${parsed.floor ? ` Floor ${parsed.floor}` : ''}. Technician dispatched.`
+        };
+      }
+    }
+
+    // ========== ASSET TAG FOLLOW-UP ==========
+    if (type === 'asset_tag') {
+      const kbArticle = this.db.prepare('SELECT * FROM knowledge_base WHERE kb_id = ?').get('KB-03');
+      const kbArticles = kbArticle ? [kbArticle] : [];
+
+      if (parsed.assetTag) {
+        return {
+          message: `Got it, ${name}! I've recorded the asset tag **${parsed.assetTag}**.\n\nI'll look up the device records for this asset. In the meantime, could you tell me approximately how old this laptop is?\n\n• Devices **3+ years old** qualify for full replacement.\n• Devices under 3 years are routed to Hardware Repair.`,
+          action: 'asset_tag_recorded',
+          status: 'waiting_response',
+          priority: 'medium',
+          escalate: false,
+          autoResolved: false,
+          followUpQuestions: ['How old is the laptop approximately?'],
+          kbArticles: kbArticles,
+          updatedCategory: 'Hardware',
+          reasoning: `Follow-up: Asset tag ${parsed.assetTag} recorded. Awaiting age to determine replacement vs repair.`
+        };
+      }
+    }
+
+    // ========== YES/NO APPROVAL CHECK ==========
+    if (type === 'approval_check') {
+      if (parsed.isYes) {
+        return {
+          message: `Thank you, ${name}! ✅\n\nSince you have manager approval, I'll escalate this request for final processing.\n\n**Next Steps:**\n1. Please email the approved Access Request Form to **it-access@veridian-corp.example**.\n2. Our team will verify and provision within **2 business days**.\n3. You'll receive a confirmation email once access is granted.\n\nIs there anything else I can assist with?`,
+          action: 'approval_confirmed_proceeding',
+          status: 'in_progress',
+          priority: 'high',
+          escalate: false,
+          autoResolved: false,
+          followUpQuestions: [],
+          kbArticles: [],
+          reasoning: 'Follow-up: Employee confirmed manager approval. Request proceeding to provisioning.'
+        };
+      }
+
+      if (parsed.isNo) {
+        return {
+          message: `Understood, ${name}.\n\n**Required Next Steps:**\n1. Contact your **Department Head or Manager** to obtain approval.\n2. Fill out the **Access Request Form** with business justification.\n3. Once approved, reply here or open a new ticket with the signed form.\n\nI'll keep this ticket on hold until approval is received. The ticket will auto-close in 7 days if no update is provided.`,
+          action: 'awaiting_approval_document',
+          status: 'waiting_approval',
+          priority: 'medium',
+          escalate: false,
+          autoResolved: false,
+          followUpQuestions: [],
+          kbArticles: [],
+          reasoning: 'Follow-up: Employee does not have manager approval yet. Ticket held pending approval document.'
+        };
+      }
+    }
+
+    // ========== EXPENSE ACCOUNT CHECK ==========
+    if (type === 'expense_account') {
+      const kbArticle = this.db.prepare('SELECT * FROM knowledge_base WHERE kb_id = ?').get('KB-08');
+      const kbArticles = kbArticle ? [kbArticle] : [];
+
+      if (parsed.isYes) {
+        return {
+          message: `Got it, ${name}. Since you already have an expense account, this appears to be a **technical login issue**.\n\n**Troubleshooting Steps:**\n1. Clear your browser cache and cookies.\n2. Try logging in via an Incognito/Private window.\n3. If you see a specific error, please share a screenshot or the exact message.\n\nIf the issue persists, I'll escalate this to the Expense Tool technical support team.\n\n📋 **Reference:** ${kbArticle ? `${kbArticle.kb_id} — ${kbArticle.title}` : 'KB-08 Expense Management'}`,
+          action: 'expense_login_troubleshooting',
+          status: 'in_progress',
+          priority: 'medium',
+          escalate: false,
+          autoResolved: false,
+          followUpQuestions: ['What error message do you see when logging in?'],
+          kbArticles: kbArticles,
+          updatedCategory: 'Software',
+          updatedSubCategory: 'Expense Tool',
+          reasoning: 'Follow-up: Employee has existing expense account. Providing login troubleshooting per KB-08.'
+        };
+      }
+
+      if (parsed.isNo) {
+        return {
+          message: `Understood, ${name}.\n\nNew expense account creation is managed by the **Finance Department**, not IT.\n\n**Steps to get an account:**\n1. Contact your manager to request expense tool access.\n2. Finance will provision your account within **3 business days**.\n3. Once provisioned, IT can assist with any login credential issues.\n\nI've noted this in your ticket and routed it to Finance for follow-up.\n\n📋 **Reference:** ${kbArticle ? `${kbArticle.kb_id} — ${kbArticle.title}` : 'KB-08 Expense Management'}`,
+          action: 'routed_to_finance',
+          status: 'open',
+          priority: 'medium',
+          escalate: false,
+          autoResolved: false,
+          followUpQuestions: [],
+          kbArticles: kbArticles,
+          updatedCategory: 'Software',
+          updatedSubCategory: 'Expense Tool',
+          reasoning: 'Follow-up: Employee needs new expense account. Routed to Finance per KB-08.'
+        };
+      }
+    }
+
+    // ========== QUOTA INCREASE CONFIRMATION ==========
+    if (type === 'quota_request') {
+      const kbArticle = this.db.prepare('SELECT * FROM knowledge_base WHERE kb_id = ?').get('KB-06');
+      const kbArticles = kbArticle ? [kbArticle] : [];
+
+      if (parsed.isYes) {
+        return {
+          message: `Request submitted, ${name}! ✅\n\n**Mailbox Quota Increase Request:**\n• Current quota: **25GB**\n• Requested quota: **50GB**\n• Status: **Pending Manager Approval**\n\nYour manager will receive an approval email shortly. Once approved, the quota increase will be applied within 1 business day.\n\n📋 **Reference:** ${kbArticle ? `${kbArticle.kb_id} — ${kbArticle.title}` : 'KB-06 Mailbox Quota'}`,
+          action: 'quota_increase_submitted',
+          status: 'waiting_approval',
+          priority: 'medium',
+          escalate: false,
+          autoResolved: false,
+          followUpQuestions: [],
+          kbArticles: kbArticles,
+          updatedCategory: 'Email',
+          reasoning: 'Follow-up: Employee confirmed quota increase request. Submitted for manager approval per KB-06.'
+        };
+      }
+
+      if (parsed.isNo) {
+        return {
+          message: `No problem, ${name}. I recommend trying the self-service cleanup steps first:\n\n1. Empty **Deleted Items** & **Junk** folders.\n2. Archive emails older than 1 year.\n3. Remove large attachments from Sent Items.\n\nIf you change your mind about the quota increase, just let me know!\n\n📋 **Reference:** ${kbArticle ? `${kbArticle.kb_id} — ${kbArticle.title}` : 'KB-06 Mailbox Quota'}`,
+          action: 'self_service_recommended',
+          status: 'resolved',
+          priority: 'low',
+          escalate: false,
+          autoResolved: true,
+          followUpQuestions: [],
+          kbArticles: kbArticles,
+          updatedCategory: 'Email',
+          reasoning: 'Follow-up: Employee declined quota increase. Resolved with self-service steps per KB-06.'
+        };
+      }
+    }
+
+    // ========== CONFIRM ACTION (Platform change, etc.) ==========
+    if (type === 'confirm_action') {
+      if (parsed.isYes) {
+        return {
+          message: `Request submitted, ${name}! ✅\n\nYour request has been forwarded to your **Department Head** for review and approval.\n\n**Expected Timeline:**\n• Manager review: **1–2 business days**\n• IT Security validation: **1 business day** after manager approval\n• Equipment swap: **3–5 business days** after full approval\n\nYou'll receive email notifications at each stage. Is there anything else I can help with?`,
+          action: 'request_submitted_for_approval',
+          status: 'waiting_approval',
+          priority: 'medium',
+          escalate: false,
+          autoResolved: false,
+          followUpQuestions: [],
+          kbArticles: [],
+          reasoning: 'Follow-up: Employee confirmed action. Request submitted for manager approval.'
+        };
+      }
+
+      if (parsed.isNo) {
+        return {
+          message: `No problem, ${name}. I've kept the information on file in case you change your mind later. Feel free to open a new conversation anytime.\n\nIs there anything else I can help you with today?`,
+          action: 'action_cancelled_by_user',
+          status: 'closed',
+          priority: 'low',
+          escalate: false,
+          autoResolved: true,
+          followUpQuestions: [],
+          kbArticles: [],
+          reasoning: 'Follow-up: Employee declined action. Ticket closed.'
+        };
+      }
+    }
+
+    // ========== LAPTOP DIAGNOSTIC (charger/display question) ==========
+    if (type === 'laptop_diagnostic') {
+      const kbArticle = this.db.prepare('SELECT * FROM knowledge_base WHERE kb_id = ?').get('KB-03');
+      const kbArticles = kbArticle ? [kbArticle] : [];
+
+      return {
+        message: `Thank you for that diagnostic detail, ${name}.\n\n**Updated Assessment:**\nBased on your feedback, I've added this information to the repair ticket for the technician.\n\n**Next Steps:**\n1. A **hardware technician** will contact you within **4 business hours** to schedule an inspection.\n2. Bring your laptop and charger to the **IT Service Center** (Building B, Floor 2).\n3. If it's determined unrepairable, we'll initiate an early replacement with Finance approval.\n\n📋 **Reference:** ${kbArticle ? `${kbArticle.kb_id} — ${kbArticle.title}` : 'KB-03 Hardware Policy'}`,
+        action: 'diagnostic_info_recorded',
+        status: 'in_progress',
+        priority: 'medium',
+        escalate: false,
+        autoResolved: false,
+        followUpQuestions: [],
+        kbArticles: kbArticles,
+        updatedCategory: 'Hardware',
+        updatedSubCategory: 'Laptop',
+        reasoning: `Follow-up: Employee provided diagnostic info for laptop repair. Technician dispatch queued.`
+      };
+    }
+
+    // ========== CONTRACTOR DATE ==========
+    if (type === 'contractor_date') {
+      const kbArticle = this.db.prepare('SELECT * FROM knowledge_base WHERE kb_id = ?').get('KB-02');
+      const kbArticles = kbArticle ? [kbArticle] : [];
+
+      if (parsed.date || originalText.length > 3) {
+        return {
+          message: `Thank you, ${name}! I've recorded the contractor project timeline.\n\n**Contractor VPN Access Request:**\n• End date: **${parsed.date || originalText}**\n• Status: **Pending Manager Approval**\n\n**Next Steps:**\n1. The contracting manager will receive an approval email.\n2. Once approved, VPN credentials will be generated and sent securely.\n3. Credentials will auto-expire at the project end date.\n\n📋 **Reference:** ${kbArticle ? `${kbArticle.kb_id} — ${kbArticle.title}` : 'KB-02 VPN Access'}`,
+          action: 'contractor_vpn_request_submitted',
+          status: 'waiting_approval',
+          priority: 'medium',
+          escalate: false,
+          autoResolved: false,
+          followUpQuestions: [],
+          kbArticles: kbArticles,
+          updatedCategory: 'Network Access',
+          updatedSubCategory: 'VPN',
+          reasoning: `Follow-up: Contractor end date provided (${parsed.date || originalText}). VPN request submitted for approval per KB-02.`
+        };
+      }
+    }
+
+    // ========== CLARIFICATION (vague → specific) ==========
+    if (type === 'clarification') {
+      // The user is providing details about their issue — re-classify with fresh context
+      return null; // Falls through to the main processMessage with combined context
+    }
+
+    // No specific handler matched
+    return null;
   }
 
   /**
