@@ -107,10 +107,20 @@ async function startServer() {
       res.json({ status: 'ok', service: 'Veridian IT Service Agent', timestamp: new Date().toISOString() });
     });
 
-    // 404
-    app.use((req, res) => {
-      res.status(404).json({ error: 'Endpoint not found.' });
-    });
+    // Serve static frontend in production if built
+    const frontendDist = path.join(__dirname, '../frontend/dist');
+    if (require('fs').existsSync(frontendDist)) {
+      app.use(express.static(frontendDist));
+      app.get('*', (req, res, next) => {
+        if (req.path.startsWith('/api/')) return next();
+        res.sendFile(path.join(frontendDist, 'index.html'));
+      });
+    } else {
+      // 404 for API endpoints
+      app.use('/api/*', (req, res) => {
+        res.status(404).json({ error: 'Endpoint not found.' });
+      });
+    }
 
     // Global error handler
     app.use((err, req, res, next) => {

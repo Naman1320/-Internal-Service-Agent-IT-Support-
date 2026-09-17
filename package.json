@@ -4,9 +4,11 @@
   "description": "AI-Powered Internal IT Service Agent for Veridian Corp",
   "scripts": {
     "install:all": "cd backend && npm install && cd ../frontend && npm install",
+    "build": "cd backend && npm install && cd ../frontend && npm install && npm run build",
     "dev:backend": "cd backend && npm run dev",
     "dev:frontend": "cd frontend && npm run dev",
     "start": "concurrently \"npm run dev:backend\" \"npm run dev:frontend\"",
+    "start:prod": "cd backend && node server.js",
     "setup": "npm install && npm run install:all && cd backend && node database/init.js"
   },
   "dependencies": {
